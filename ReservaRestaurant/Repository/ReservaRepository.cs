@@ -2,6 +2,7 @@
 using Microsoft.IdentityModel.Tokens;
 using ReservaRestaurant.Domain.DTO;
 using ReservaRestaurant.Domain.Entities;
+using ReservaRestaurant.Reportes;
 using ReservaRestaurant.Repository.Interfaces;
 using System.Globalization;
 
@@ -18,99 +19,217 @@ namespace ReservaRestaurant.Repository
             _reservaContext = context;
         }
 
-        public async Task<bool> AddReserva(ReservaDTO reserva)
+        public async Task<ResultadoOperacion> AddReserva(ReservaDTO reserva)
         {
+            var resultado = new ResultadoOperacion();
             var newReserva = new Reserva();
             int rows = 0;
-            int espacioDisponible = 0;
             DateTime fechaAhora = DateTime.Now;
             DateTime fechaReserva;
 
-            Console.WriteLine("Iniciando AddReserva...");
-            if (ComprobacionGeneral(reserva))
+            var comprobacionGeneral = await ComprobacionGeneral(reserva);
+            fechaReserva = await ConversionDateTime(reserva.FechaReserva);
+            var comprobacionSobreFecha = await ComprobacionSobreFecha(reserva.FechaReserva, fechaAhora); 
+            var tieneReservaExistente = await TieneReservaExistenteEnFecha(reserva.Dni, fechaReserva);
+            var espacioDisponibleResponse = await EspacioDisponible(fechaReserva, reserva.IdRangoReserva);
+
+            if (!comprobacionGeneral.Exitoso)
+                resultado.MensajesError.AppendLine(comprobacionGeneral.MensajesError.ToString());
+
+            if (!comprobacionSobreFecha.Exitoso)
+                resultado.MensajesError.AppendLine(comprobacionSobreFecha.MensajesError.ToString());
+
+            if (espacioDisponibleResponse <= reserva.CantidadPersonas)
+                resultado.MensajesError.AppendLine($"La cantidad de personas no puede ser mayor al espacio disponible. Espacio disponible: {espacioDisponibleResponse}.\n");
+
+            if (resultado.MensajesError.Length == 0 && !tieneReservaExistente.Exitoso)
             {
-                Console.WriteLine("ComprobacionGeneral pasa.");
+                newReserva.CodReserva = Guid.NewGuid().ToString();
+                newReserva.NombrePersona = reserva.NombrePersona;
+                newReserva.ApellidoPersona = reserva.ApellidoPersona;
+                newReserva.Dni = reserva.Dni;
+                newReserva.Mail = reserva.Mail;
+                newReserva.Celular = reserva.Celular;
+                newReserva.FechaReserva = fechaReserva;
+                newReserva.IdRangoReserva = reserva.IdRangoReserva;
+                newReserva.CantidadPersonas = reserva.CantidadPersonas;
+                newReserva.FechaAlta = fechaAhora;
+                newReserva.FechaModificacion = fechaAhora;
+                newReserva.Estado = "CONFIRMADO";
 
-                if (await ComprobacionSobreFecha(reserva.FechaReserva, fechaAhora)) 
-                {
-                    Console.WriteLine("ComprobacionSobreFecha pasa.");
-
-                    fechaReserva = ConversionDateTime(reserva.FechaReserva);
-
-                    bool tieneReservaExistente = await TieneReservaExistenteEnFecha(reserva.Dni, fechaReserva);
-
-                    espacioDisponible = EspacioDisponible(fechaReserva, reserva.IdRangoReserva);
-
-                    if (!tieneReservaExistente &&  espacioDisponible <= reserva.CantidadPersonas  ) 
-                    {
-                        Console.WriteLine("Condiciones para crear reserva cumplidas.");
-
-                        newReserva.CodReserva = Guid.NewGuid().ToString();
-                        newReserva.NombrePersona = reserva.NombrePersona;
-                        newReserva.ApellidoPersona = reserva.ApellidoPersona;
-                        newReserva.Dni = reserva.Dni;
-                        newReserva.Mail = reserva.Mail;
-                        newReserva.Celular = reserva.Celular;
-                        newReserva.FechaReserva = fechaReserva;
-                        newReserva.IdRangoReserva = reserva.IdRangoReserva;
-                        newReserva.CantidadPersonas = reserva.CantidadPersonas;
-                        newReserva.FechaAlta = fechaAhora;
-                        newReserva.FechaModificacion = fechaAhora;
-                        newReserva.Estado = "CONFIRMADO";
-
-                        await _reservaContext.AddAsync(newReserva);
-                        rows = await _reservaContext.SaveChangesAsync();
-                    }
-                }    
+                await _reservaContext.AddAsync(newReserva);
+                rows = await _reservaContext.SaveChangesAsync();
             }
-            return rows > 0;
+
+            resultado.Exitoso = rows > 0;
+            return resultado;
         }
 
-        public async Task<bool> CancelarReserva(string dni, string fechaReserva, int idRango)
+        public async Task<ResultadoOperacion> CancelarReserva(string dni, string fechaReserva, int idRango)
         {
-               int rows = 0;
-               DateTime FechaReserva;
+            var resultado = new ResultadoOperacion();
+            int rows = 0;
+            DateTime FechaReserva;
 
-               FechaReserva = ConversionDateTime(fechaReserva);
-               
-               if (await TieneReservaExistenteEnFecha(dni, FechaReserva)) 
-               {
+            FechaReserva = await ConversionDateTime(fechaReserva);
 
-                     var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
-                                                                                        && f.FechaReserva.Date == FechaReserva.Date
-                                                                                        && f.IdRangoReserva == idRango);
+            var resultadoFecha = await TieneReservaExistenteEnFecha(dni, FechaReserva);
 
-                     reservaMatch.Estado = "CANCELADO";
-                     reservaMatch.CantidadPersonas = 0;
-                     reservaMatch.FechaModificacion = DateTime.Now;
-                     rows = await _reservaContext.SaveChangesAsync();
-               }
-            return rows > 0;
+            if (!resultadoFecha.Exitoso)
+            {
+                return resultadoFecha;
+            }
+
+            var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
+                                                                                                && f.FechaReserva.Date == FechaReserva.Date
+                                                                                                && f.IdRangoReserva == idRango);
+
+                if (reservaMatch != null)
+                {
+                    reservaMatch.Estado = "CANCELADO";
+                    reservaMatch.CantidadPersonas = 0;
+                    reservaMatch.FechaModificacion = DateTime.Now;
+                    rows = await _reservaContext.SaveChangesAsync();
+                }
+                else
+                {
+                    resultado.Exitoso = false;
+                    resultado.MensajesError.AppendLine("No se encontró la reserva para cancelar dentro del rango indicado.\n");
+                }
+            resultado.Exitoso = rows > 0;
+            return resultado;
         }
 
-        public async Task<bool> UpdateReserva( string dni, string fechaAnterior, string fechaActual, int rango, int cantidadPersonas)
-        {
+        public async Task<ResultadoOperacion> UpdateReservaFecha(string dni, string fechaAnterior, string fechaActual)
+        {   
+            var resultado = new ResultadoOperacion();
             int rows = 0;
             DateTime FechaReservaAnterior;
             DateTime FechaReservaActual;
 
-            FechaReservaAnterior = ConversionDateTime(fechaAnterior);
-            FechaReservaActual = ConversionDateTime(fechaActual);
+            FechaReservaAnterior = await ConversionDateTime(fechaAnterior);
+            FechaReservaActual = await ConversionDateTime(fechaActual);
 
-            if (await TieneReservaExistenteEnFecha(dni, FechaReservaAnterior) && (EspacioDisponible(FechaReservaAnterior, rango) <= cantidadPersonas) )
+            var resultadoFecha = await TieneReservaExistenteEnFecha(dni, FechaReservaAnterior);
+
+            if (!resultadoFecha.Exitoso)
             {
-                var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
-                                                                   && f.FechaReserva.Date == FechaReservaAnterior);
+                return resultadoFecha;
+            }
+
+            var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
+                                                                                                && f.FechaReserva.Date == FechaReservaAnterior.Date);
+            var espacioDisponibleResponse = await EspacioDisponible(FechaReservaActual, reservaMatch.IdRangoReserva);
+
+            if (espacioDisponibleResponse < reservaMatch.CantidadPersonas)
+                resultado.MensajesError.AppendLine($"La cantidad de personas no puede ser mayor al espacio disponible. Espacio disponible: {espacioDisponibleResponse}.\n");
+
+
+            if(resultado.MensajesError.Length == 0)
+            {
                 reservaMatch.FechaReserva = FechaReservaActual;
                 reservaMatch.FechaModificacion = DateTime.Now;
+                reservaMatch.Estado = "CONFIRMADO";
+                rows = await _reservaContext.SaveChangesAsync();
+            }
+            resultado.Exitoso = rows > 0;
+            return resultado;
+
+        }
+
+        public async Task<ResultadoOperacion> UpdateReservaRango(string dni, string fecha, int rango)
+        {
+            var resultado = new ResultadoOperacion();
+            int rows = 0;
+            DateTime FechaReserva;
+
+            FechaReserva = await ConversionDateTime(fecha);
+ 
+            var resultadoFecha = await TieneReservaExistenteEnFecha(dni, FechaReserva);
+
+            if (!resultadoFecha.Exitoso)
+            {
+                return resultadoFecha;
+            }
+
+            var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
+                                                                                                && f.FechaReserva.Date == FechaReserva.Date);
+            var espacioDisponibleResponse = await EspacioDisponible(FechaReserva, rango);
+
+            if (espacioDisponibleResponse < reservaMatch.CantidadPersonas)
+                resultado.MensajesError.AppendLine($"La cantidad de personas no puede ser mayor al espacio disponible. Espacio disponible: {espacioDisponibleResponse}.\n");
+
+            if (resultado.MensajesError.Length == 0)
+            {
                 reservaMatch.IdRangoReserva = rango;
+                reservaMatch.FechaModificacion = DateTime.Now;
+                reservaMatch.Estado = "CONFIRMADO";
+                rows = await _reservaContext.SaveChangesAsync();
+            }
+            resultado.Exitoso = rows > 0;
+            return resultado;
+        }
+
+        public async Task<ResultadoOperacion> UpdateReservaCantidadPersonas(string dni, string fechaReserva, int cantidadPersonas)
+        {
+            var resultado = new ResultadoOperacion();
+            int rows = 0;
+            DateTime FechaReserva;
+
+            FechaReserva = await ConversionDateTime(fechaReserva);
+
+            var resultadoFecha = await TieneReservaExistenteEnFecha(dni, FechaReserva);
+
+            if (!resultadoFecha.Exitoso)
+            {
+                return resultadoFecha;
+            }
+
+            var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni && f.FechaReserva.Date == FechaReserva.Date);
+
+            var espacioDisponibleActual = await EspacioDisponible(FechaReserva, reservaMatch.IdRangoReserva);
+            espacioDisponibleActual += reservaMatch.CantidadPersonas;
+            if (espacioDisponibleActual < cantidadPersonas)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine($"No hay suficiente espacio disponible en el rango actual para la nueva cantidad de personas. Espacio disponible: {espacioDisponibleActual}.\n");
+                return resultado;
+            }
+
+            if (resultado.MensajesError.Length == 0)
+            {
                 reservaMatch.CantidadPersonas = cantidadPersonas;
+                reservaMatch.FechaModificacion = DateTime.Now;
+                reservaMatch.Estado = "CONFIRMADO";
                 rows = await _reservaContext.SaveChangesAsync();
             }
 
-            return rows > 0;
+            resultado.Exitoso = rows > 0;
+            return resultado;
         }
+        /*public async Task<bool> UpdateReserva( string dni, string fechaAnterior, string fechaActual, int rango, int cantidadPersonas)
+         {
+             int rows = 0;
+             DateTime FechaReservaAnterior;
+             DateTime FechaReservaActual;
 
+             FechaReservaAnterior = ConversionDateTime(fechaAnterior);
+             FechaReservaActual = ConversionDateTime(fechaActual);
+
+             if (await TieneReservaExistenteEnFecha(dni, FechaReservaAnterior) && (EspacioDisponible(FechaReservaAnterior, rango) <= cantidadPersonas) )
+             {
+                 var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
+                                                                    && f.FechaReserva.Date == FechaReservaAnterior);
+                 reservaMatch.FechaReserva = FechaReservaActual;
+                 reservaMatch.FechaModificacion = DateTime.Now;
+                 reservaMatch.IdRangoReserva = rango;
+                 reservaMatch.CantidadPersonas = cantidadPersonas;
+                 rows = await _reservaContext.SaveChangesAsync();
+             }
+
+             return rows > 0;
+         }
+        */
         public async Task<List<CalendarioDTO>> GetListarTurnosDisponibles()
         {
             var calendario = new List<CalendarioDTO>();
@@ -141,7 +260,7 @@ namespace ReservaRestaurant.Repository
                                                 reserva.Estado.ToUpper() == "CONFIRMADO")
                                             .Sum(reserva => reserva.CantidadPersonas),
 
-                        Total = rango.Cupo
+                        Total = rango.Cupo 
                     }
                 }).ToListAsync();
 
@@ -302,81 +421,171 @@ namespace ReservaRestaurant.Repository
 
             return calendario;
         }
-        public DateTime ConversionDateTime(string fecha)
+        public async Task<DateTime> ConversionDateTime(string fecha)
         {
             DateTime fechaConvertida;
-
+            if(fecha.IsNullOrEmpty())
+            {
+                fecha = "05/05/1999";
+            }
             fechaConvertida = DateTime.ParseExact(fecha, "dd/MM/yyyy", null);
 
             return fechaConvertida;
         }
 
-        public bool ComprobacionGeneral(ReservaDTO reserva)
+        public async Task<ResultadoOperacion> ComprobacionGeneral(ReservaDTO reserva)
         {
-            bool valido = false;
+            var resultado = new ResultadoOperacion();
 
-            if(!reserva.NombrePersona.IsNullOrEmpty() && !reserva.ApellidoPersona.IsNullOrEmpty() && !reserva.Dni.IsNullOrEmpty() && !reserva.Mail.IsNullOrEmpty() &&
-                !reserva.Celular.IsNullOrEmpty() && !ComprobacionIdRango(reserva.IdRangoReserva, reserva.CantidadPersonas) && !reserva.FechaReserva.IsNullOrEmpty())
+            if (reserva.NombrePersona.IsNullOrEmpty())
             {
-               valido = true;
-            }
-            return valido;
-        }
-
-        public bool ComprobacionIdRango(int rango, int cantPersonas)
-        {
-            bool valido = true;
-
-            if ( (rango > 0 && rango < 5) && (cantPersonas > 0 && cantPersonas <= 100) ) { valido = false; }
-            
-            return valido;
-        }
-
-        public async Task<bool> ComprobacionSobreFecha(string fechaIngresada, DateTime fechaAhora)
-        {
-            bool valido = false;
-            
-
-            if (DateTime.TryParseExact(fechaIngresada, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out DateTime fechaReserva))
-            {
-                if (fechaReserva >= fechaAhora)
-                {
-                    TimeSpan diferenciaDeSemana = fechaReserva - fechaAhora;
-
-                    if (diferenciaDeSemana.TotalDays != 7)
-                    {
-                        valido = true;
-                    }
-                }
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El nombre no puede estar vacío.");
             }
 
-            return valido;
+            if (reserva.ApellidoPersona.IsNullOrEmpty())
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El apellido no puede estar vacío.");
+            }
+
+            if (reserva.Dni.IsNullOrEmpty())
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El DNI no puede estar vacío.");
+            }
+
+            if (reserva.Mail.IsNullOrEmpty())
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El correo electrónico no puede estar vacío.");
+            }
+
+            if (reserva.Celular.IsNullOrEmpty())
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El número de celular no puede estar vacío.");
+            }
+
+            if(reserva.IdRangoReserva == 0)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El número de idRango no puede estar vacío.");
+            }
+            var resultadoIdRango = ComprobacionIdRango(reserva.IdRangoReserva, reserva.CantidadPersonas);
+            if (!resultadoIdRango.Exitoso)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine(resultadoIdRango.MensajesError.ToString());
+            }
+
+            if (reserva.FechaReserva.IsNullOrEmpty())
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("La fecha de reserva no puede estar vacía.");
+            }
+
+            return resultado;
         }
 
-        public async Task<bool> TieneReservaExistenteEnFecha(string dni, DateTime fechaReserva)
+        public ResultadoOperacion ComprobacionIdRango(int rango, int cantPersonas)
         {
+            var resultado = new ResultadoOperacion();
+
+            if (rango <= 0 || rango >= 5)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El ID de rango debe estar entre 1 y 4.\n");
+            }
+
+            if (cantPersonas <= 0 || cantPersonas > 100)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("La cantidad de personas debe estar entre 1 y 100.\n");
+            }
+
+            return resultado;
+        }
+
+        public async Task<ResultadoOperacion> ComprobacionSobreFecha(string fechaIngresada, DateTime fechaAhora)
+        {
+            var resultado = new ResultadoOperacion();
+
+            if (!DateTime.TryParseExact(fechaIngresada, "dd/MM/yyyy", null, System.Globalization.DateTimeStyles.None, out DateTime fechaReserva))
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El formato de fecha ingresado no es válido, debe ser el siguiente: dd/MM/yyyy o tambien puede ser que necesite agregar un 0 delante de los numeros de 1 cifra.");
+                return resultado;
+            }
+
+            fechaAhora = fechaAhora.Date;
+
+            if (fechaReserva < fechaAhora)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("La fecha de reserva no puede ser anterior a la fecha actual.");
+            }
+
+            TimeSpan diferenciaDeSemana = fechaReserva - fechaAhora;
+            if (diferenciaDeSemana.TotalDays > 7)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("La anticipación de la reserva como maximo es de 7 días.");
+            }
+
+            return resultado;
+        }
+
+        public async Task<ResultadoOperacion> TieneReservaExistenteEnFecha(string dni, DateTime fechaReserva)
+        {
+            var resultado = new ResultadoOperacion();
+
+            if (string.IsNullOrEmpty(dni))
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("El DNI no puede estar vacío.\n");
+                return resultado;
+            }
+
+
+            var dniExistente = await _reservaContext.Reservas
+                                                             .AnyAsync(r => r.Dni == dni);
+
+            if (!dniExistente)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine($"No se encontró un registro confirmado para el DNI {dni}.\n");
+                return resultado;
+            }
 
             var reservaExistente = await _reservaContext.Reservas
-                                                                .FirstOrDefaultAsync(r => r.Dni == dni
-                                                                                  && r.FechaReserva.Date == fechaReserva.Date
-                                                                                  && r.Estado.ToUpper() == "CONFIRMADO");
+                .FirstOrDefaultAsync(r => r.Dni == dni
+                                            && r.FechaReserva.Date == fechaReserva.Date
+                                            && r.Estado.ToUpper() == "CONFIRMADO");
 
+            if (reservaExistente == null)
+            {
+                resultado.Exitoso = false;
+                resultado.MensajesError.AppendLine("No se encontró una reserva confirmada para el DNI y la fecha proporcionados.\n");
+            }
 
-            return reservaExistente != null;
+            return resultado;
         }
 
-        public int EspacioDisponible(DateTime fechaReserva, int idRango)
+        public async Task<int> EspacioDisponible(DateTime fechaReserva, int idRango)
         {
-            var reservasConfirmadas = _reservaContext.Reservas
-                                                              .Where(r => r.FechaReserva.Date == fechaReserva.Date
-                                                                       && r.IdRangoReserva == idRango
-                                                                       && r.Estado.ToUpper() == "CONFIRMADO");
+            var reservasConfirmadas = await _reservaContext.Reservas
+                .Where(r => r.FechaReserva.Date == fechaReserva.Date
+                            && r.IdRangoReserva == idRango
+                            && r.Estado.ToUpper() == "CONFIRMADO")
+                .ToListAsync(); 
 
             int cantidadPersonas = reservasConfirmadas.Sum(r => r.CantidadPersonas);
 
-            int cupoMaximo = _reservaContext.RangoReservas.Where(r => r.IdRangoReserva == idRango)
-                                                          .Select(r => r.Cupo)
-                                                          .FirstOrDefault();
+            int cupoMaximo = await _reservaContext.RangoReservas
+                .Where(r => r.IdRangoReserva == idRango)
+                .Select(r => r.Cupo)
+                .FirstOrDefaultAsync(); 
 
             int espacioDisponible = cupoMaximo - cantidadPersonas;
 
