@@ -39,7 +39,7 @@ namespace ReservaRestaurant.Repository
             if (!comprobacionSobreFecha.Exitoso)
                 resultado.MensajesError.AppendLine(comprobacionSobreFecha.MensajesError.ToString());
 
-            if (espacioDisponibleResponse <= reserva.CantidadPersonas)
+            if (espacioDisponibleResponse < reserva.CantidadPersonas)
                 resultado.MensajesError.AppendLine($"La cantidad de personas no puede ser mayor al espacio disponible. Espacio disponible: {espacioDisponibleResponse}.\n");
 
             if (resultado.MensajesError.Length == 0 && !tieneReservaExistente.Exitoso)
@@ -106,7 +106,7 @@ namespace ReservaRestaurant.Repository
             int rows = 0;
             DateTime FechaReservaAnterior;
             DateTime FechaReservaActual;
-
+            DateTime FechaAhora = DateTime.Now;
             FechaReservaAnterior = await ConversionDateTime(fechaAnterior);
             FechaReservaActual = await ConversionDateTime(fechaActual);
 
@@ -116,6 +116,11 @@ namespace ReservaRestaurant.Repository
             {
                 return resultadoFecha;
             }
+
+            var comprobacionSobreFecha = await ComprobacionSobreFecha(fechaActual, FechaAhora);
+
+            if (!comprobacionSobreFecha.Exitoso)
+                resultado.MensajesError.AppendLine(comprobacionSobreFecha.MensajesError.ToString());
 
             var reservaMatch = await _reservaContext.Reservas.FirstOrDefaultAsync(f => f.Dni == dni
                                                                                                 && f.FechaReserva.Date == FechaReservaAnterior.Date);
